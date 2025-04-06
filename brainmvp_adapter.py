@@ -20,7 +20,8 @@ import math
 import scipy.ndimage
 import scipy.linalg as linalg
 
-from BrainMVP.models.Uni_unet import UniUnet
+from BrainMVP.models.Uniformer import RecModel as BrainMVPUniformer
+from BrainMVP.models.Unet import RecModel as BrainMVPUnet
 
 # Here we use MNIST as a brief example, and later would extract all general functions and merge them into a new file
 from DataGenerator_MRI import extract_slice, getposition_1, getposition_2 
@@ -48,18 +49,41 @@ class BrainMVPAdapter:
         self.patch_shape = patch_shape
 
         # Load BrainMVP model
-        self.model = UniUnet(input_shape=patch_shape,
-                             in_channels=in_channels,
-                             out_channels=out_classes)
-
-        # Load weights
+        if model_type.lower() == 'uniformer':
+            args = type('Args', (), {})()
+            args.device = device
+            args.roi_x = patch_shape
+            args.template_index = ['flair', 't1', 't1c', 't2']  
+            
+            self.model = BrainMVPUniformer(args, dim=512)
+        else:  # Using U-Net
+            args = type('Args', (), {})()
+            args.roi_x = patch_shape * 3  
+            args.in_channels = in_channels
+            args.template_index = ['flair', 't1', 't1c', 't2']
+            
+            self.model = BrainMVPUnet(args, dim=512)
+        
         checkpoint = torch.load(brainmvp_checkpoint, map_location=torch.device('cpu'))
-        self.model.load_state_dict(checkpoint['state_dict'], strict=True)
+
+        if 'state_dict' in checkpoint:
+            state_dict = checkpoint['state_dict']
+            new_state_dict = {}
+            for key in state_dict:
+                new_key = key.replace('module.', '')
+                new_state_dict[new_key] = state_dict[key]
+
+            self.model.load_state_dict(new_state_dict, strict=False)
+            print(f"Successfully loaded BrainMVP checkpoint with {len(new_state_dict)} parameters")
+        else:
+            self.model.load_state_dict(checkpoint, strict=False)
+            print("Loaded complete checkpoint")
+        
         self.model = self.model.to(self.device)
         self.model.eval()
-
-        # Set up transformation pipeline
+        
         self.transforms = self._get_transforms()
+
 
     def _get_transforms(self):
         """
