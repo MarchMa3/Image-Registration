@@ -1,0 +1,17 @@
+torch==1.10.2
+numpy
+scipy==1.5.1
+tqdm==4.62.3
+dill
+medmnist
+matplotlib
+
+transformers>=4.18.0
+monai>=1.4.0
+timm>=1.0.15
+einops>=0.8.1
+tensorboardX>=2.6.2.2
+scikit-learn>=1.6.1
+scikit-image>=0.22.0
+mlflow>=2.21.2
+nibabel>=5.2.1
