@@ -264,54 +264,31 @@ class BrainMVPExtractor(Dataset):
         return imaging
 
     def __getitem__(self, idx):
-        """
-        获取一批数据，包括BrainMVP特征
-        
-        输入:
-            idx: 批次索引
-        
-        输出:
-            如果使用BrainMVP:
-                features: BrainMVP特征表示
-                image_2d: 2D切片
-                labels1: 第一级标签列表
-                labels1_loss1: 第一级标签张量
-                labels2: 第二级标签列表
-                labels2_loss: 第二级标签损失
-            如果不使用BrainMVP:
-                原始images_3d和其他输出
-        """
         if self.split == 'train':
             if not self.returnSubjectID:
-                # 加载原始3D图像和2D切片位置信息
                 images_3d, images_2d_list = self._load_batch_image_train(idx)
                 
-                # 常规数据增强（如果启用且不是在特征提取前应用）
                 if self.augmented and not (self.use_brainmvp and self.apply_aug_before_feature):
                     images_3d = self.dataAugmentation.augmentData_batch(images_3d)
                 
-                # 创建原始图像的Tensor表示用于处理2D切片
                 images = images_3d.astype(np.float32)
                 images = torch.from_numpy(images)
                 images = self.combine(images, self.batch_size)
                 
-                # 初始化2D图像和标签容器
                 image_2d = np.zeros((self.batch_size, *self.dim2d))
                 labels1_loss1 = np.zeros((self.batch_size, *self.dimlabel1), dtype=np.int64)
                 labels2_loss = []
                 labels2 = []
                 labels1 = []
                 
-                # 处理每个样本的2D切片和标签
                 for i in range(self.batch_size):
                     image_single = images[i:i+1,:,:,:]
                     c = images_2d_list[i]
                     n = [random.randint(0, 9), random.randint(0, 9), random.randint(0, 9)]
-                    r = 2  # 2D图像大小
+                    r = 2  
                     arr = torch.squeeze(image_single)
                     slicer, sub_loc, slice_check = extract_slice(arr, c, n, r)
                     
-                    # 生成标签
                     check_point1 = (slice_check[0][0][0], slice_check[1][0][0], slice_check[2][0][0])
                     check_point2 = (slice_check[0][2*r-1][0], slice_check[1][2*r-1][0], slice_check[2][2*r-1][0])
                     check_point3 = (slice_check[0][0][2*r-1], slice_check[1][0][2*r-1], slice_check[2][0][2*r-1])
@@ -327,7 +304,6 @@ class BrainMVPExtractor(Dataset):
                     labels1_loss1[i, :] = final_multi_label1
                     labels1.append(label_list)
                     
-                    # 第二级标签
                     labels2_loss_mid = []
                     labels2_mid = []
                     for i_2 in range(len(label_list)):
@@ -346,35 +322,28 @@ class BrainMVPExtractor(Dataset):
                 
                 labels1_loss1 = torch.from_numpy(labels1_loss1)
                 
-                # 如果启用BrainMVP特征提取
                 if self.use_brainmvp:
-                    # 提取BrainMVP特征
                     features = self.extract_features(images_3d)
                     return features, image_2d, labels1, labels1_loss1, labels2, labels2_loss
                 else:
                     return images_3d, image_2d, labels1, labels1_loss1, labels2, labels2_loss
         else:
-            # 验证/测试集
             if self.split == 'test':
                 images_3d, images_2d_list = self._load_batch_image_test(idx)
             else:
                 images_3d, images_2d_list = self._load_batch_image_val(idx)
             
-            # 创建原始图像的Tensor表示用于处理2D切片
             images = images_3d.astype(np.float32)
             images = torch.from_numpy(images)
             images = self.combine(images, self.batch_size)
             
-            # 初始化2D图像和标签容器，处理方式与训练集相同
             image_2d = np.zeros((self.batch_size, *self.dim2d))
             labels1_loss1 = np.zeros((self.batch_size, *self.dimlabel1), dtype=np.int64)
             labels2_loss = []
             labels2 = []
             labels1 = []
             
-            # 处理每个样本，生成2D切片和标签
             for i in range(self.batch_size):
-                # 处理与训练集相同
                 image_single = images[i:i+1,:,:,:]
                 c = images_2d_list[i]
                 n = [random.randint(0, 9), random.randint(0, 9), random.randint(0, 9)]
@@ -382,7 +351,6 @@ class BrainMVPExtractor(Dataset):
                 arr = torch.squeeze(image_single)
                 slicer, sub_loc, slice_check = extract_slice(arr, c, n, r)
                 
-                # 生成标签（与训练集相同）
                 check_point1 = (slice_check[0][0][0], slice_check[1][0][0], slice_check[2][0][0])
                 check_point2 = (slice_check[0][2*r-1][0], slice_check[1][2*r-1][0], slice_check[2][2*r-1][0])
                 check_point3 = (slice_check[0][0][2*r-1], slice_check[1][0][2*r-1], slice_check[2][0][2*r-1])
@@ -398,7 +366,6 @@ class BrainMVPExtractor(Dataset):
                 labels1_loss1[i, :] = final_multi_label1
                 labels1.append(label_list)
                 
-                # 第二级标签
                 labels2_loss_mid = []
                 labels2_mid = []
                 for i_2 in range(len(label_list)):
@@ -417,9 +384,7 @@ class BrainMVPExtractor(Dataset):
             
             labels1_loss1 = torch.from_numpy(labels1_loss1)
             
-            # 如果启用BrainMVP特征提取
             if self.use_brainmvp:
-                # 提取BrainMVP特征
                 features = self.extract_features(images_3d)
                 return features, image_2d, labels1, labels1_loss1, labels2, labels2_loss
             else:
