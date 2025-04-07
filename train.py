@@ -21,96 +21,105 @@ warnings.filterwarnings('ignore')        #ignore warnings
 
 
 def main(args):
-    random.seed( 3407 )          #random seed setting
-    model1 = create_model(has_logits=False)
-    model2= create_model1(has_logits=False)
-    model3= create_model2(has_logits=False)
-    '''#Want to generate the data by yourself? Use the code in these lines.
-    train_dataset=MRIDataGenerator(args.data_path,
-                                     batchSize=args.batch_size* torch.cuda.device_count(),
-                                     idx_fold=0,
-                                     split='train')
-    val_dataset=MRIDataGenerator(args.data_path,
-                                     batchSize=args.batch_size* torch.cuda.device_count(),
-                                     idx_fold=0,
-                                     split='val')
-    test_dataset=MRIDataGenerator(args.data_path,
-                                     batchSize=args.batch_size* torch.cuda.device_count(),
-                                     idx_fold=0,
-                                     split='test')'''
-    with open('./data_pkl/OrganMNIST/train.pkl','rb') as f:          #here we load the OrganMNIST as example
-        train_dataset = dill.load(f)
-    with open('./data_pkl/OrganMNIST/val.pkl','rb') as f:          #here we load the OrganMNIST as example
-        val_dataset = dill.load(f)
-    with open('./data_pkl/OrganMNIST/test.pkl','rb') as f:          #here we load the OrganMNIST as example
-        test_dataset = dill.load(f)
-    print(args.batch_size*torch.cuda.device_count())            # This is the total batch_size
+    random.seed(3407)  # Set random seed
     
-    nw=0       #num workers
+    # Initialize BrainMVP model
+    brainmvp_model = None
+    if args.use_brainmvp:
+        # Load BrainMVP model based on actual implementation
+        from brainmvp_model import load_brainmvp_model  # Assuming such function exists
+        brainmvp_model = load_brainmvp_model(args.brainmvp_path)
+        brainmvp_model = brainmvp_model.to('cuda')
+        brainmvp_model.eval()  # Set to evaluation mode
+        # Freeze parameters
+        for param in brainmvp_model.parameters():
+            param.requires_grad = False
+    
+    # Create enhanced ATOM model
+    from enhanced_atom_model import create_enhanced_model
+    enhanced_atom = create_enhanced_model(
+        brainmvp_model=brainmvp_model,
+        brainmvp_embed_dim=args.brainmvp_dim,
+        fusion_dim=1000,
+        use_brainmvp=args.use_brainmvp
+    )
+    
+    # Data loading
+    if args.use_brainmvp:
+        # Use BrainMVP-compatible data generator
+        with open('./data_pkl/OrganMNIST/train_brainmvp.pkl', 'rb') as f:
+            train_dataset = dill.load(f)
+        with open('./data_pkl/OrganMNIST/val_brainmvp.pkl', 'rb') as f:
+            val_dataset = dill.load(f)
+        with open('./data_pkl/OrganMNIST/test_brainmvp.pkl', 'rb') as f:
+            test_dataset = dill.load(f)
+    else:
+        # Use original data generator
+        with open('./data_pkl/OrganMNIST/train.pkl', 'rb') as f:
+            train_dataset = dill.load(f)
+        with open('./data_pkl/OrganMNIST/val.pkl', 'rb') as f:
+            val_dataset = dill.load(f)
+        with open('./data_pkl/OrganMNIST/test.pkl', 'rb') as f:
+            test_dataset = dill.load(f)
+    
+    # Create data loaders
     train_loader = torch.utils.data.DataLoader(train_dataset,
                                                batch_size=1,
                                                shuffle=True,
                                                pin_memory=True,
-                                               num_workers=nw)
-
+                                               num_workers=0)
     val_loader = torch.utils.data.DataLoader(val_dataset,
                                              batch_size=1,
                                              shuffle=False,
                                              pin_memory=True,
-                                             num_workers=nw)
-    
+                                             num_workers=0)
     test_loader = torch.utils.data.DataLoader(test_dataset,
                                              batch_size=1,
                                              shuffle=False,
                                              pin_memory=True,
-                                             num_workers=nw)
-    model1=model1.to('cuda')
-    model2=model2.to('cuda')
-    model3=model3.to('cuda')          #to gpu
-    '''if args.weights != "":          #You can load weights here, but we default you have no pre-trained weights.
-        assert os.path.exists(args.weights), "weights file: '{}' not exist.".format(args.weights)
-        weights_dict1 = torch.load(args.weights, map_location='gpu')      #weights for the first model
-        weights_dict2=torch.load(args.weights2, map_location='gpu')      #weights for the second model
-        weights_dict3=torch.load(args.weights3, map_location='gpu')      #weights for the third model
-        model1.load_state_dict(weights_dict1, strict=True)
-        model2.load_state_dict(weights_dict2, strict=True)
-        model3.load_state_dict(weights_dict2, strict=True)
-        del weights_dict1
-        del weights_dict2
-        del weights_dict3
-        gc.collect()
-        torch.cuda.empty_cache()
-        model1=model1.to('cuda')
-        model2=model2.to('cuda')
-        model3=model3.to('cuda')'''
-
-    pg = [p for p in model1.parameters() if p.requires_grad]+[q for q in model2.parameters() if q.requires_grad]
-    pg1=[j for j in model3.parameters() if j.requires_grad]+[p for p in model1.parameters() if p.requires_grad]
+                                             num_workers=0)
+    
+    # Move model to GPU
+    enhanced_atom = enhanced_atom.to('cuda')
+    
+    # Create optimizers
+    pg = [p for p in enhanced_atom.vit_2d.parameters() if p.requires_grad] + \
+         [q for q in enhanced_atom.vit_3d_ga1.parameters() if q.requires_grad]
+    pg1 = [j for j in enhanced_atom.vit_3d_ga2.parameters() if j.requires_grad] + \
+          [p for p in enhanced_atom.vit_2d.parameters() if p.requires_grad]
+    
     optimizer = optim.AdamW(pg, lr=args.lr, weight_decay=1e-3)
     optimizer2 = optim.AdamW(pg1, lr=args.lr, weight_decay=1e-3)
-
+    
+    # Training loop
     for epoch in range(args.epochs):
-        train_loss, train_loss1,train_high,train_acc,train_acc_k1,x_set = train_one_epoch(model1=model1,
-                                                model2=model2,
-                                                model3=model3,
-                                                optimizer=optimizer,
-                                                optimizer2=optimizer2,
-                                                data_loader=train_loader,
-                                                device=next(model1.parameters()).device,
-                                                epoch=epoch)
-        val_loss,val_loss1,val_high,val_acc,val_acc_k1= evaluate(model1=model1,
-                                    model2=model2,
-                                    model3=model3,
-                                    data_loader=val_loader,
-                                    device=next(model1.parameters()).device,
-                                    epoch=epoch
-                                    )   
-        test_loss,test_loss1,test_high,test_acc,test_acc_k1=test(model1=model1,
-                    model2=model2,
-                    model3=model3,
-                    data_loader=test_loader,
-                    device=next(model1.parameters()).device,
-                    epoch=epoch)
+        # Train
+        train_loss, train_loss1, train_high, train_acc, train_acc_k1, x_set = train_one_epoch_enhanced(
+            model=enhanced_atom,
+            optimizer=optimizer,
+            optimizer2=optimizer2,
+            data_loader=train_loader,
+            device='cuda',
+            epoch=epoch
+        )
+        
+        # Validate
+        val_loss, val_loss1, val_high, val_acc, val_acc_k1 = evaluate_enhanced(
+            model=enhanced_atom,
+            data_loader=val_loader,
+            device='cuda',
+            epoch=epoch
+        )
+        
+        # Test
+        test_loss, test_loss1, test_high, test_acc, test_acc_k1 = test_enhanced(
+            model=enhanced_atom,
+            data_loader=test_loader,
+            device='cuda',
+            epoch=epoch
+        )
+        
+        # Clean memory
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -120,8 +129,16 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=500)
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--lr', type=float, default=0.00005)
-
-    # pretrain weights, default none
+    
+    # Add BrainMVP-related parameters
+    parser.add_argument('--use_brainmvp', action='store_true', default=True,
+                        help='whether to use BrainMVP features')
+    parser.add_argument('--brainmvp_path', type=str, default='./pretrained/brainmvp.pt',
+                        help='path to pre-trained BrainMVP model')
+    parser.add_argument('--brainmvp_dim', type=int, default=768,
+                        help='dimension of BrainMVP features')
+    
+    # Original parameters
     parser.add_argument('--weights', type=str, default='',
                         help='initial weights path')
     parser.add_argument('--weights2', type=str, default='',
@@ -132,5 +149,4 @@ if __name__ == '__main__':
                         help='initial data path')
 
     opt = parser.parse_args()
-
     main(opt)
