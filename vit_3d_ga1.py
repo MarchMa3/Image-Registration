@@ -1,7 +1,3 @@
-"""
-original code from rwightman:
-https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
-"""
 from functools import partial
 from collections import OrderedDict
 
@@ -124,7 +120,9 @@ class GAttention(nn.Module):
                  attn_drop_ratio=0.,
                  proj_drop_ratio=0.,
                  dim1=65 * 1000,
-                 dim2=4,layer_num=1):
+                 dim2=4,layer_num=1,
+                 use_brainmvp=False,
+                 brainmvp_dim=0):
         super(GAttention, self).__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
@@ -134,12 +132,29 @@ class GAttention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop_ratio)
         self.layer_num=layer_num
+        
+        self.use_brainmvp = use_brainmvp
+        if use_brainmvp:
+            self.brainmvp_proj = nn.Linear(brainmvp_dim, dim)
+            self.fusion_gate = nn.Sequential(
+                nn.Linear(dim * 2, dim),
+                nn.Sigmoid()
+            )
 
-    def forward(self, x,k,v):
+    def forward(self, x, k, v, brainmvp_features=None):
         B, N, C = x.shape
 
         qkv = self.qkv(x).reshape(B, N, 1, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q= qkv[0]  
+        q = qkv[0]
+        
+        if self.use_brainmvp and brainmvp_features is not None:
+            brainmvp_proj = self.brainmvp_proj(brainmvp_features)
+            brainmvp_proj = brainmvp_proj.reshape(B, N, 1, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)[0]
+            
+            gate = self.fusion_gate(torch.cat([q.reshape(B, N, -1), brainmvp_proj.reshape(B, N, -1)], dim=-1))
+            gate = gate.reshape(B, self.num_heads, N, C // self.num_heads)
+            q = q * gate + brainmvp_proj * (1 - gate)
+        
         attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
@@ -211,21 +226,23 @@ class Block2(nn.Module):
                  drop_path_ratio=0.,
                  act_layer=nn.GELU,
                  norm_layer=nn.LayerNorm,
-                 dim1=28 * 125,dim2=10,layer_num=1
+                 dim1=28 * 125,dim2=10,layer_num=1,
+                 use_brainmvp=False,
+                 brainmvp_dim=0
                  ):
         super(Block2, self).__init__()
         self.norm1 = norm_layer(dim)
         self.attn = GAttention(dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale,
-                              attn_drop_ratio=attn_drop_ratio, proj_drop_ratio=drop_ratio,dim1=dim1,dim2=dim2,layer_num=layer_num)
-        # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
+                              attn_drop_ratio=attn_drop_ratio, proj_drop_ratio=drop_ratio,
+                              dim1=dim1, dim2=dim2, layer_num=layer_num,
+                              use_brainmvp=use_brainmvp, brainmvp_dim=brainmvp_dim)
         self.drop_path = DropPath(drop_path_ratio) if drop_path_ratio > 0. else nn.Identity()
-        '''if layer_num==1:
-            dim=4'''
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop_ratio)
-    def forward(self, x,k,v):
-        x=self.attn(self.norm1(x),k,v)
+        
+    def forward(self, x, k, v, brainmvp_features=None):
+        x = self.attn(self.norm1(x), k, v, brainmvp_features)
         x = x + self.drop_path(x)
         x = x + self.drop_path(self.mlp(self.norm2(x)))
         return x
@@ -236,7 +253,7 @@ class VisionTransformer(nn.Module):
                  embed_dim=1000, depth=1, num_heads=4, mlp_ratio=4.0, qkv_bias=True,
                  qk_scale=None, representation_size=None, distilled=False, drop_ratio=0.,
                  attn_drop_ratio=0., drop_path_ratio=0., embed_layer=PatchEmbed, norm_layer=None,
-                 act_layer=None):
+                 act_layer=None, use_brainmvp=False, brainmvp_dim=0):
         """
         Args:
             img_size (int, tuple): input image size
@@ -256,35 +273,44 @@ class VisionTransformer(nn.Module):
             drop_path_ratio (float): stochastic depth rate
             embed_layer (nn.Module): patch embedding layer
             norm_layer: (nn.Module): normalization layer
+            use_brainmvp (bool): whether to use BrainMVP features
+            brainmvp_dim (int): dimension of BrainMVP features
         """
         super(VisionTransformer, self).__init__()
         self.embed_dim = embed_dim  # num_features for consistency with other models
         self.num_tokens = 1
-        self.num_heads=num_heads
+        self.num_heads = num_heads
+        self.use_brainmvp = use_brainmvp
+        
         norm_layer = norm_layer or partial(nn.LayerNorm, eps=1e-6)
         act_layer = act_layer or nn.GELU
-        self.final_embed=4
-        self.patch_embed = embed_layer(img_size=img_size, patch_size=10, in_c=in_c,stride=5)
+        self.final_embed = 4
+        self.patch_embed = embed_layer(img_size=img_size, patch_size=10, in_c=in_c, stride=5)
         num_patches = 3*3*3
         self.norm = norm_layer(self.embed_dim)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + self.num_tokens, embed_dim))
         self.pos_drop = nn.Dropout(p=drop_ratio)
         self.head = nn.Linear(self.embed_dim, 27) 
-        self.match_kv=nn.Linear(5,28*250)
-        #self.head_1 = nn.Linear(self.embed_dim, 3)
-        #self.head_2 = nn.Linear(self.embed_dim, 3)
+        self.match_kv = nn.Linear(5, 28*250)
+        
+        # Add BrainMVP
+        if use_brainmvp:
+            self.brainmvp_adapter = nn.Sequential(
+                nn.Linear(brainmvp_dim, embed_dim),
+                nn.LayerNorm(embed_dim),
+                nn.GELU()
+            )
+        
         dpr = [x.item() for x in torch.linspace(0, drop_path_ratio, depth)]  # stochastic depth decay rule
         self.block1 = Block2(dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
                   drop_ratio=drop_ratio, attn_drop_ratio=attn_drop_ratio, drop_path_ratio=dpr[0],
-                  norm_layer=norm_layer, act_layer=act_layer,dim1=28 * 250,dim2=5,layer_num=1)
+                  norm_layer=norm_layer, act_layer=act_layer, dim1=28 * 250, dim2=5, layer_num=1,
+                  use_brainmvp=use_brainmvp, brainmvp_dim=brainmvp_dim)
         
         # Representation layer
         self.has_logits = False
         self.pre_logits = nn.Identity()
-
-        # Classifier head(s)
-        self.head_dist = None
 
         # Weight init
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
@@ -292,26 +318,32 @@ class VisionTransformer(nn.Module):
         self.apply(_init_vit_weights)
 
 
-    def forward(self, x,k,v):
-        k=k.flatten(2)
-        k=self.match_kv(k)
-        k=k.view(x.shape[0],self.num_heads,28,250)
-        v=v.flatten(2)
-        v=self.match_kv(v)
-        v=v.view(x.shape[0],self.num_heads,28,250)
-        origin=x=x.float()
+    def forward(self, x, k, v, brainmvp_features=None):
+        k = k.flatten(2)
+        k = self.match_kv(k)
+        k = k.view(x.shape[0], self.num_heads, 28, 250)
+        v = v.flatten(2)
+        v = self.match_kv(v)
+        v = v.view(x.shape[0], self.num_heads, 28, 250)
+        
+        if self.use_brainmvp and brainmvp_features is not None:
+            b = brainmvp_features.shape[0]
+            brainmvp_features = brainmvp_features.reshape(b, -1, brainmvp_features.shape[1])
+            brainmvp_features = self.brainmvp_adapter(brainmvp_features)
+        
+        origin = x = x.float()
         x = self.patch_embed(x) 
         cls_token = self.cls_token.expand(x.shape[0], -1, -1)
         x = torch.cat((cls_token, x), dim=1)  
         x = self.pos_drop(x + self.pos_embed)
-        x = self.block1(x,k,v)
-        x_set=x
+        x = self.block1(x, k, v, brainmvp_features)
+        x_set = x
         head_x = self.norm(x)
-        head_x=self.pre_logits(head_x[:, 0])
+        head_x = self.pre_logits(head_x[:, 0])
         x1 = self.head(head_x)
-        _,x1_out=x1.topk(max((1,5)), 1, True, True)
-        _,x1_out_k1=x1.topk(max((1,)), 1, True, True)
-        return x1,x1_out,x1_out_k1,x_set
+        _, x1_out = x1.topk(max((1,5)), 1, True, True)
+        _, x1_out_k1 = x1.topk(max((1,)), 1, True, True)
+        return x1, x1_out, x1_out_k1, x_set
 
 
 def _init_vit_weights(m):

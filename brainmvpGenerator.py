@@ -6,7 +6,7 @@ It includes classes for loading the BrainMVP model, extracting features, and gen
 """
 __author__ = 'Jingnan Ma'
 
-import torc
+import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
 import numpy as np
@@ -295,7 +295,6 @@ class BrainMVPExtractor(Dataset):
                     check_point4 = (slice_check[0][2*r-1][2*r-1], slice_check[1][2*r-1][2*r-1], slice_check[2][2*r-1][2*r-1])
                     check = [check_point1, check_point2, check_point3, check_point4]
                     
-                    # 第一级标签
                     label_list = getposition_1(check)
                     image_2d[i, :, :] = slicer
                     final_multi_label1 = np.zeros(27)
@@ -357,7 +356,6 @@ class BrainMVPExtractor(Dataset):
                 check_point4 = (slice_check[0][2*r-1][2*r-1], slice_check[1][2*r-1][2*r-1], slice_check[2][2*r-1][2*r-1])
                 check = [check_point1, check_point2, check_point3, check_point4]
                 
-                # 第一级标签
                 label_list = getposition_1(check)
                 image_2d[i, :, :] = slicer
                 final_multi_label1 = np.zeros(27)
@@ -389,3 +387,91 @@ class BrainMVPExtractor(Dataset):
                 return features, image_2d, labels1, labels1_loss1, labels2, labels2_loss
             else:
                 return images_3d, image_2d, labels1, labels1_loss1, labels2, labels2_loss
+
+    def parse_csv_file2(self):
+        self.file_path_train=[]
+        self.file_path_val=[]
+        self.file_path_test=[]
+        random.seed(3407)
+        train_big_block=range(0,len(self.train_dataset))
+        val_big_block=range(0,len(self.val_dataset))
+        test_big_block=range(0,len(self.test_dataset))
+        train_small_piece=random.sample(range(0,17*17),50)
+        val_small_piece=random.sample(range(0,17*17),50)
+        test_small_piece=random.sample(range(0,17*17),50)
+        i_6_list=random.sample(range(0,20),4)
+        for i in train_big_block:
+            for t in train_small_piece:
+                i_4=t//17
+                i_5=t%17
+                if 17>=i_4>=2 and 17>=i_5>=2:
+                    for i_6 in i_6_list:
+                        self.file_path_train.append([i,i_4,i_5,i_6])
+        for i in val_big_block:
+            for t in val_small_piece:
+                i_4=t//17
+                i_5=t%17
+                if 17>=i_4>=2 and 17>=i_5>=2:
+                    for i_6 in i_6_list:
+                        self.file_path_val.append([i,i_4,i_5,i_6])
+        for i in test_big_block:
+            for t in test_small_piece:
+                i_4=t//17
+                i_5=t%17
+                if 17>=i_4>=2 and 17>=i_5>=2:
+                    for i_6 in i_6_list:
+                        self.file_path_test.append([i,i_4,i_5,i_6])
+        if self.split == 'train':
+            self.totalLength = len(self.file_path_train)
+        elif self.split=='val':
+            self.totalLength = len(self.file_path_val)
+        else:
+            self.totalLength = len(self.file_path_test)
+        print(self.split,self.totalLength)
+
+    def on_epoch_end(self):
+        if self.split == 'train':
+            np.random.shuffle(self.file_path_train)
+
+    def _load_one_image(self, image_path,dataset):
+        image_MRI=dataset[image_path[0]][0][0]
+        initial_shape=image_MRI.shape
+        image_MRI=scipy.ndimage.zoom(image_MRI, [20/initial_shape[0],20/initial_shape[1],20/initial_shape[2]], order=3)
+        final_3d=np.expand_dims(image_MRI, axis=0)
+        return final_3d
+
+    def _rotate_idx(self, l, m):
+        for i in range(len(l)):
+            while l[i] >= m:
+                l[i] = l[i] - m
+        return l
+
+    def _load_batch_image_train(self, idx):
+        idxlist = [*range(idx * self.batch_size, (idx + 1) * self.batch_size)]
+        idxlist = self._rotate_idx(idxlist, len(self.file_path_train))
+        images_3d = np.zeros((self.batch_size, *self.dim, self.n_channels))
+        images_2d_list=[]
+        for i in range(self.batch_size):
+            images_3d[i, :, :, :, 0] = self._load_one_image(self.file_path_train[idxlist[i]],self.train_dataset)
+            images_2d_list.append([self.file_path_train[idxlist[i]][1],self.file_path_train[idxlist[i]][2],self.file_path_train[idxlist[i]][3]])
+        return images_3d,images_2d_list
+
+    def _load_batch_image_test(self, idx):
+        idxlist = [*range(idx * self.batch_size, (idx + 1) * self.batch_size)]
+        idxlist = self._rotate_idx(idxlist, len(self.file_path_test))
+        images_3d = np.zeros((self.batch_size, *self.dim, self.n_channels))
+        images_2d_list=[]
+        for i in range(self.batch_size):
+            images_3d[i, :, :, :, 0] = self._load_one_image(self.file_path_test[idxlist[i]],self.test_dataset)
+            images_2d_list.append([self.file_path_test[idxlist[i]][1],self.file_path_test[idxlist[i]][2],self.file_path_test[idxlist[i]][3]])
+        return images_3d,images_2d_list
+
+    def _load_batch_image_val(self, idx):
+        idxlist = [*range(idx * self.batch_size, (idx + 1) * self.batch_size)]
+        idxlist = self._rotate_idx(idxlist, len(self.file_path_val))
+        images_3d = np.zeros((self.batch_size, *self.dim, self.n_channels))
+        images_2d_list=[]
+        for i in range(self.batch_size):
+            images_3d[i, :, :, :, 0] = self._load_one_image(self.file_path_val[idxlist[i]],self.val_dataset)
+            images_2d_list.append([self.file_path_val[idxlist[i]][1],self.file_path_val[idxlist[i]][2],self.file_path_val[idxlist[i]][3]])
+        return images_3d,images_2d_list
